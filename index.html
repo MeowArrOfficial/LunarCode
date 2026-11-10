@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LunarCode</title>
+</head>
+<body>
+<script>
+(function () {
+"use strict";
+
+if (window.__LUNARCODE__) return;
+window.__LUNARCODE__ = true;
+
+const store = {
+  get(k, def = null) {
+    try { const v = localStorage.getItem(k); return v === null ? def : v; }
+    catch { return def; }
+  },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+};
+
+// CRYPTO CORE
+
+const KEY = 73921;
+const KEY_LOW = KEY % 100;
+
+function moonWave(i) {
+  const a = Math.sin(i * 17.271 + KEY) * 9999;
+  const b = Math.cos(i * 5.137 + KEY_LOW) * 4444;
+  return Math.floor(Math.abs(a + b)) % 512;
+}
+
+function checkSum(t) {
+  let s = 0x1F;
+  for (let i = 0; i < t.length; i++) {
+    s ^= t.charCodeAt(i);
+    s = (s * 31 + i + 7) & 0x7FFFFFFF;
+    s = ((s << 5) | (s >>> 27)) & 0x7FFFFFFF;
+  }
+  return s % 9999999;
+}
+
+function parseLunar(data, prefix) {
+  if (!data.startsWith(prefix + "|")) return null;
+  const p = data.split("|");
+  if (p.length !== 3) return null;
+  const sum = Number(p[1]);
+  if (!Number.isFinite(sum)) return null;
+  const nums = p[2].split(".");
+  if (nums.some(n => n === "" || !/^[0-9a-z]+$/i.test(n))) return null;
+  return { sum, nums };
+}
+
+function lunar1Encrypt(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) out.push((text.charCodeAt(i) + i + KEY_LOW).toString(36));
+  return "LC1|" + out.join(".");
+}
+function lunar1Decrypt(data) {
+  if (!data.startsWith("LC1|")) return null;
+  const parts = data.slice(4).split(".");
+  let text = "";
+  for (let i = 0; i < parts.length; i++) {
+    const v = parseInt(parts[i], 36);
+    if (!Number.isFinite(v)) return null;
+    text += String.fromCharCode(v - i - KEY_LOW);
+  }
+  return text;
+}
+
+function lunar2Encrypt(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) out.push((text.charCodeAt(i) + moonWave(i) + i * i * 7 + KEY).toString(36));
+  return "LC2|" + checkSum(text) + "|" + out.join(".");
+}
+function lunar2Decrypt(data) {
+  const p = parseLunar(data, "LC2");
+  if (!p) return null;
+  let text = "";
+  for (let i = 0; i < p.nums.length; i++) {
+    const mixed = parseInt(p.nums[i], 36);
+    if (!Number.isFinite(mixed)) return null;
+    text += String.fromCharCode(mixed - moonWave(i) - i * i * 7 - KEY);
+  }
+  return checkSum(text) === p.sum ? text : null;
+}
+
+function lunar3Encrypt(text) {
+  const out = [];
+  let prev = 0;
+  for (let i = 0; i < text.length; i++) {
+    const mixed = text.charCodeAt(i) + prev + moonWave(i) + KEY;
+    prev = mixed % 500;
+    out.push(mixed.toString(36));
+  }
+  return "LC3|" + checkSum(text) + "|" + out.join(".");
+}
+function lunar3Decrypt(data) {
+  const p = parseLunar(data, "LC3");
+  if (!p) return null;
+  let text = "", prev = 0;
+  for (let i = 0; i < p.nums.length; i++) {
+    const mixed = parseInt(p.nums[i], 36);
+    if (!Number.isFinite(mixed)) return null;
+    const code = mixed - prev - moonWave(i) - KEY;
+    prev = mixed % 500;
+    text += String.fromCharCode(code);
+  }
+  return checkSum(text) === p.sum ? text : null;
+}
+
+function lunar4Encrypt(text) {
+  const codes = [];
+  for (let i = 0; i < text.length; i++) {
+    const w = moonWave(i * 3 + 11);
+    const salt = (i % 2 === 0) ? KEY : KEY_LOW;
+    codes.push(text.charCodeAt(i) ^ ((w + salt) & 0xFFFF));
+  }
+  for (let i = 0; i + 1 < codes.length; i += 2) [codes[i], codes[i + 1]] = [codes[i + 1], codes[i]];
+  return "LC4|" + checkSum(text) + "|" + codes.map(c => c.toString(36)).join(".");
+}
+function lunar4Decrypt(data) {
+  const p = parseLunar(data, "LC4");
+  if (!p) return null;
+  const codes = p.nums.map(n => parseInt(n, 36));
+  if (codes.some(v => !Number.isFinite(v))) return null;
+  for (let i = 0; i + 1 < codes.length; i += 2) [codes[i], codes[i + 1]] = [codes[i + 1], codes[i]];
+  let text = "";
+  for (let i = 0; i < codes.length; i++) {
+    const w = moonWave(i * 3 + 11);
+    const salt = (i % 2 === 0) ? KEY : KEY_LOW;
+    text += String.fromCharCode(codes[i] ^ ((w + salt) & 0xFFFF));
+  }
+  return checkSum(text) === p.sum ? text : null;
+}
+
+const ENGINES = {
+  encrypt: [lunar1Encrypt, lunar2Encrypt, lunar3Encrypt, lunar4Encrypt],
+  decrypt: [lunar1Decrypt, lunar2Decrypt, lunar3Decrypt, lunar4Decrypt]
+};
+
+// LANGUAGES
+
+let lang = store.get("lc_lang", "ru");
+const TEXT = {
+  ru: {
+    title: "🌙 LunarCode", desc: "Твой собственный многорежимный шифратор",
+    copy: "Копировать", copied: "Скопировано", noCopy: "Нечего копировать", noDownload: "Нечего скачивать",
+    download: "Скачать .txt", downloaded: "Файл сохранён",
+    encryptionMode: "Режим шифрования:", result: "Результат",
+    inputField: "Введите текст...", resultField: "Результат появится здесь...",
+    encrypt: "Шифровать", decrypt: "Расшифровать", clear: "Очистить",
+    settings: "Настройки", theme: "Тема", light: "Светлая", dark: "Тёмная",
+    language: "Язык", autoCopy: "Автокопирование", history: "История",
+    ready: "Готов", empty: "Введите текст", encrypted: "Зашифровано Lunar ",
+    decrypted: "Расшифровано Lunar ", error: "Ошибка: неверный формат или повреждённые данные",
+    cleared: "Очищено", symbols: "Символов: ", bytes: "Байт: ",
+    lunar1: "Lunar 1", lunar2: "Lunar 2", lunar3: "Lunar 3", lunar4: "Lunar 4",
+    noHistory: "История пуста", historyCleared: "История очищена",
+    tooLong: "Слишком длинный текст (макс. 20000 символов)",
+    dropTextOnly: "Можно переносить только текстовые файлы",
+    hint: "Alt+1 — шифровать · Alt+2 — расшифровать · Alt+3 — копировать · Alt+4 — очистить"
+  },
+  en: {
+    title: "🌙 LunarCode", desc: "Your own multi-mode text encryptor",
+    copy: "Copy", copied: "Copied", noCopy: "Nothing to copy", noDownload: "Nothing to download",
+    download: "Download .txt", downloaded: "File saved",
+    encryptionMode: "Encryption mode:", result: "Result",
+    inputField: "Enter text...", resultField: "Result will appear here...",
+    encrypt: "Encrypt", decrypt: "Decrypt", clear: "Clear",
+    settings: "Settings", theme: "Theme", light: "Light", dark: "Dark",
+    language: "Language", autoCopy: "Auto-copying", history: "History",
+    ready: "Ready", empty: "Enter text", encrypted: "Encrypted Lunar ",
+    decrypted: "Decrypted Lunar ", error: "Error: invalid format or corrupted data",
+    cleared: "Cleared", symbols: "Characters: ", bytes: "Bytes: ",
+    lunar1: "Lunar 1", lunar2: "Lunar 2", lunar3: "Lunar 3", lunar4: "Lunar 4",
+    noHistory: "History is empty", historyCleared: "History cleared",
+    tooLong: "Text too long (max 20000 chars)",
+    dropTextOnly: "Only text files can be dropped",
+    hint: "Alt+1 — encrypt · Alt+2 — decrypt · Alt+3 — copy · Alt+4 — clear"
+  }
+};
+const t = k => (TEXT[lang] && TEXT[lang][k]) || k;
+
+// UI
+
+document.documentElement.innerHTML = "";
+document.body.innerHTML = `
+<div id="bgStars" aria-hidden="true"></div>
+
+<div id="app">
+  <header>
+    <h1 id="title">${t("title")}</h1>
+    <p id="desc">${t("desc")}</p>
+  </header>
+
+  <div class="selectBox">
+    <label id="modeLabel">${t("encryptionMode")}</label>
+    <select id="mode">
+      <option value="1">${t("lunar1")}</option>
+      <option value="2" selected>${t("lunar2")}</option>
+      <option value="3">${t("lunar3")}</option>
+      <option value="4">${t("lunar4")}</option>
+    </select>
+  </div>
+
+  <textarea id="input" placeholder="${t("inputField")}"></textarea>
+  <div id="counter">${t("symbols")}0 · ${t("bytes")}0</div>
+
+  <div class="buttons">
+    <button id="encrypt">${t("encrypt")}</button>
+    <button id="decrypt">${t("decrypt")}</button>
+    <button id="clear">${t("clear")}</button>
+  </div>
+
+  <h3 id="resultTitle">${t("result")}</h3>
+  <textarea id="output" placeholder="${t("resultField")}" readonly></textarea>
+
+  <div class="buttons plus">
+    <button id="copyBtn">${t("copy")}</button>
+    <button id="downloadBtn">${t("download")}</button>
+  </div>
+
+  <div id="status">${t("ready")}</div>
+  <div id="hint">${t("hint")}</div>
+  <div id="info">LunarCode Engine 5.6| autor: meow.arr</div>
+
+  <div id="historyBox">
+    <div id="historyToggle" role="button" tabindex="0">
+      <span id="historyTitle">${t("history")}</span>
+      <span class="chevron"></span>
+    </div>
+    <div class="historyInner">
+      <div class="historyBody">
+        <div id="historyList"></div>
+        <button id="clearHistory">${t("clear")}</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<button id="settingsBtn" aria-label="Settings">
+  <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+      d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z
+         M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33
+         1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06
+         a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09
+         A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33
+         H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06
+         a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09
+         a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+</button>
+
+<div id="settingsPanel">
+  <h2 id="settingsTitle">${t("settings")}</h2>
+
+  <label id="themeLabel">${t("theme")}</label>
+  <label class="themeSwitch">
+    <input type="checkbox" id="themeToggle">
+    <span class="themeTrack">
+      <span class="themeKnob"></span>
+    </span>
+  </label>
+
+  <label id="languageLabel">${t("language")}</label>
+  <select id="langSelect">
+    <option value="ru">Русский</option>
+    <option value="en">English</option>
+  </select>
+
+  <label class="checkLabel">
+    <input type="checkbox" id="autoCopyToggle"> <span id="autoCopyText">${t("autoCopy")}</span>
+  </label>
+</div>
+`;
+
+const $ = id => document.getElementById(id);
+const input = $("input"), output = $("output"), mode = $("mode"), status = $("status");
+const settingsBtn = $("settingsBtn"), settingsPanel = $("settingsPanel");
+const copyBtn = $("copyBtn"), downloadBtn = $("downloadBtn");
+const counter = $("counter"), historyList = $("historyList");
+const historyBox = $("historyBox"), historyToggle = $("historyToggle");
+
+// COUNTER
+
+let counterTimer = null;
+input.addEventListener("input", () => {
+  clearTimeout(counterTimer);
+  counterTimer = setTimeout(() => {
+    const bytes = new Blob([input.value]).size;
+    counter.textContent = `${t("symbols")}${input.value.length} · ${t("bytes")}${bytes}`;
+  }, 120);
+});
+
+// STATUS
+
+function setStatus(msg, type = "") {
+  status.textContent = msg;
+  status.className = type;
+}
+
+// HISTORY
+
+function loadHistory() {
+  try { return JSON.parse(store.get("lc_history", "[]")); } catch { return []; }
+}
+function saveHistory(h) { store.set("lc_history", JSON.stringify(h.slice(0, 10))); }
+function pushHistory(entry) {
+  const h = loadHistory();
+  h.unshift({ ...entry, ts: Date.now() });
+  saveHistory(h);
+  renderHistory();
+}
+function renderHistory() {
+  const h = loadHistory();
+  if (!h.length) { historyList.innerHTML = `<p class="muted">${t("noHistory")}</p>`; return; }
+  historyList.innerHTML = h.map((e, i) => `
+    <div class="historyItem" data-i="${i}">
+      <div class="historyMeta">
+        <span class="badge">LC${e.mode}</span>
+        <span class="muted">${new Date(e.ts).toLocaleTimeString()}</span>
+      </div>
+      <div class="historyPreview">${escapeHtml(e.preview)}</div>
+    </div>
+  `).join("");
+  historyList.querySelectorAll(".historyItem").forEach(el => {
+    el.onclick = () => {
+      const item = loadHistory()[Number(el.dataset.i)];
+      if (!item) return;
+      input.value = item.input;
+      output.value = item.output;
+      mode.value = item.mode;
+      setStatus(t("decrypted") + item.mode, "ok");
+    };
+  });
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function toggleHistory(force) {
+  const open = force !== undefined ? force : !historyBox.classList.contains("open");
+  historyBox.classList.toggle("open", open);
+}
+historyToggle.onclick = () => toggleHistory();
+historyToggle.onkeydown = e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleHistory(); }
+};
+
+// CORE OPS
+
+const MAX_LEN = 20000;
+
+function doEncrypt() {
+  const text = input.value;
+  if (!text.trim()) { output.value = ""; setStatus(t("empty"), "warn"); return; }
+  if (text.length > MAX_LEN) { setStatus(t("tooLong"), "err"); return; }
+  const idx = Number(mode.value) - 1;
+  try {
+    const result = ENGINES.encrypt[idx](text);
+    output.value = result;
+    setStatus(t("encrypted") + mode.value, "ok");
+    pushHistory({ mode: mode.value, input: text, output: result, preview: text.slice(0, 60) });
+    if ($("autoCopyToggle").checked) navigator.clipboard.writeText(result).catch(() => {});
+  } catch { setStatus(t("error"), "err"); }
+}
+
+function doDecrypt() {
+  const data = input.value.trim();
+  if (!data) { setStatus(t("empty"), "warn"); return; }
+  let result = null, used = null;
+  for (let i = 1; i <= 4; i++) {
+    if (data.startsWith(`LC${i}|`)) {
+      result = ENGINES.decrypt[i - 1](data);
+      used = i;
+      break;
+    }
+  }
+  if (used === null || result === null) {
+    setStatus(t("error"), "err"); output.value = ""; return;
+  }
+  output.value = result;
+  setStatus(t("decrypted") + used, "ok");
+  pushHistory({ mode: String(used), input: data, output: result, preview: result.slice(0, 60) });
+}
+
+function doClear() {
+  input.value = ""; output.value = "";
+  counter.textContent = `${t("symbols")}0 · ${t("bytes")}0`;
+  setStatus(t("cleared"));
+}
+
+$("encrypt").onclick = doEncrypt;
+$("decrypt").onclick = doDecrypt;
+$("clear").onclick = doClear;
+$("clearHistory").onclick = () => { saveHistory([]); renderHistory(); setStatus(t("historyCleared")); };
+
+// COPY / DOWNLOAD
+
+copyBtn.onclick = () => {
+  if (!output.value.trim()) { setStatus(t("noCopy"), "warn"); return; }
+  navigator.clipboard.writeText(output.value)
+    .then(() => setStatus(t("copied"), "ok"))
+    .catch(() => setStatus(t("error"), "err"));
+};
+
+downloadBtn.onclick = () => {
+  if (!output.value.trim()) { setStatus(t("noDownload"), "warn"); return; }
+  const blob = new Blob([output.value], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `lunarcode-${Date.now()}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(t("downloaded"), "ok");
+};
+
+// SETTINGS
+
+settingsBtn.onclick = () => settingsPanel.classList.toggle("show");
+
+let dark = store.get("lc_theme", "dark") !== "light";
+function applyTheme() {
+  document.documentElement.classList.toggle("light", !dark);
+  document.body.classList.toggle("light", !dark);
+  $("themeToggle").checked = dark;
+}
+$("themeToggle").onchange = e => {
+  dark = e.target.checked;
+  store.set("lc_theme", dark ? "dark" : "light");
+  applyTheme();
+};
+applyTheme();
+
+$("langSelect").value = lang;
+$("langSelect").onchange = e => {
+  lang = e.target.value;
+  store.set("lc_lang", lang);
+  updateLanguage();
+  renderHistory();
+};
+
+$("autoCopyToggle").checked = store.get("lc_autocopy", "0") === "1";
+$("autoCopyToggle").onchange = e => store.set("lc_autocopy", e.target.checked ? "1" : "0");
+
+function updateLanguage() {
+  $("title").textContent = t("title");
+  $("desc").textContent = t("desc");
+  $("modeLabel").textContent = t("encryptionMode");
+  mode.options[0].text = t("lunar1");
+  mode.options[1].text = t("lunar2");
+  mode.options[2].text = t("lunar3");
+  mode.options[3].text = t("lunar4");
+  $("resultTitle").textContent = t("result");
+  input.placeholder = t("inputField");
+  output.placeholder = t("resultField");
+  $("encrypt").textContent = t("encrypt");
+  $("decrypt").textContent = t("decrypt");
+  $("clear").textContent = t("clear");
+  copyBtn.textContent = t("copy");
+  downloadBtn.textContent = t("download");
+  $("settingsTitle").textContent = t("settings");
+  $("themeLabel").textContent = t("theme");
+  $("languageLabel").textContent = t("language");
+  $("autoCopyText").textContent = t("autoCopy");
+  $("hint").textContent = t("hint");
+  $("historyTitle").textContent = t("history");
+  $("clearHistory").textContent = t("clear");
+}
+
+// KEYBINDS
+
+document.addEventListener("keydown", e => {
+  if (!e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return;
+
+  const code = e.code;
+
+  if (code === "Digit1" || e.key === "1") {
+    e.preventDefault(); doEncrypt();
+  } else if (code === "Digit2" || e.key === "2") {
+    e.preventDefault(); doDecrypt();
+  } else if (code === "Digit3" || e.key === "3") {
+    e.preventDefault(); copyBtn.click();
+  } else if (code === "Digit4" || e.key === "4") {
+    e.preventDefault(); doClear();
+  }
+});
+
+// DRAG & DROP
+
+function readTextFile(file) {
+  const isText = file.type === "text/plain" || file.type.startsWith("text/") ||
+                 /\.(txt|lc|lunarcode|json|log|md|csv)$/i.test(file.name);
+  if (!isText) {
+    setStatus(t("dropTextOnly"), "warn");
+    return;
+  }
+  const r = new FileReader();
+  r.onload = () => {
+    input.value = r.result;
+    input.dispatchEvent(new Event("input"));
+    setStatus(t("ready"), "ok");
+  };
+  r.onerror = () => setStatus(t("error"), "err");
+  r.readAsText(file);
+}
+
+["dragenter", "dragover", "dragleave", "drop"].forEach(evt => {
+  document.addEventListener(evt, e => e.preventDefault(), false);
+});
+
+const appEl = $("app");
+document.addEventListener("dragover", e => {
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = appEl.contains(e.target) ? "copy" : "none";
+  }
+}, false);
+
+function handleDrop(e) {
+  const dt = e.dataTransfer;
+  if (!dt) return;
+  const files = dt.files;
+  if (files && files.length) {
+    readTextFile(files[0]);
+    return;
+  }
+  const txt = dt.getData("text");
+  if (txt) {
+    input.value = txt;
+    input.dispatchEvent(new Event("input"));
+  }
+}
+
+appEl.addEventListener("dragover", e => {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  input.classList.add("dragover");
+});
+appEl.addEventListener("dragleave", e => {
+  if (!appEl.contains(e.relatedTarget)) input.classList.remove("dragover");
+});
+appEl.addEventListener("drop", e => {
+  e.preventDefault();
+  input.classList.remove("dragover");
+  handleDrop(e);
+});
+
+const savedMode = store.get("lc_mode", null);
+if (savedMode) mode.value = savedMode;
+mode.onchange = () => store.set("lc_mode", mode.value);
+
+// STARS
+
+(function buildStars() {
+  const bg = $("bgStars");
+  const layers = [
+    { count: 90, size: 5, color: "var(--star-far)", cls: "far" },
+    { count: 55, size: 6, color: "var(--star-mid)", cls: "mid" },
+    { count: 28, size: 7, color: "var(--star-near)", cls: "near" }
+  ];
+  layers.forEach((layer, idx) => {
+    const shadows = [];
+    for (let i = 0; i < layer.count; i++) {
+      const x = 3 + Math.random() * 94;
+      const y = 3 + Math.random() * 94;
+      shadows.push(`${x.toFixed(2)}vw ${y.toFixed(2)}vh 0 0 ${layer.color}`);
+    }
+    const dot = document.createElement("div");
+    dot.className = `starLayer ${layer.cls}`;
+    dot.style.boxShadow = shadows.join(",");
+    dot.style.animationDelay = `-${idx * 1.3}s`;
+    bg.appendChild(dot);
+  });
+})();
+
+// STYLES
+
+const style = document.createElement("style");
+style.textContent = `
+:root {
+  --bg1:#140826; --bg2:#07010f; --bg3:#2a0a4e;
+  --accent:#a855f7; --accent2:#7c3aed; --accent-glow:rgba(168,85,247,.5);
+  --panel:rgba(30,10,55,.62); --panel-border:rgba(168,85,247,.22);
+  --text:#efe6ff;
+  --muted:rgba(239,230,255,.42);
+  --field-bg:rgba(10,3,22,.8);
+  --field-border:rgba(168,85,247,.22);
+  --btn-bg:#4b2670; --btn-hover:#7139a8;
+  --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
+  --star-far: rgba(255,255,255,.55);
+  --star-mid: rgba(220,190,255,.75);
+  --star-near: rgba(255,240,255,.9);
+  --scroll-track: #0a0316;
+  --scroll-thumb: #7c3aed;
+  --scroll-thumb-hover: #a855f7;
+}
+body.light {
+  --bg1:#f4eeff; --bg2:#ffffff; --bg3:#e5d4ff;
+  --panel:rgba(255,255,255,.72); --panel-border:rgba(120,80,200,.22);
+  --text:#1a0b2e;
+  --muted:rgba(26,11,46,.42);
+  --field-bg:#ffffff;
+  --field-border:rgba(120,80,200,.22);
+  --btn-bg:#e2d4f5; --btn-hover:#c9b3e8;
+  --star-far: rgba(60, 30, 100, .25);
+  --star-mid: rgba(80, 40, 130, .45);
+  --star-near: rgba(110, 50, 180, .65);
+  --scroll-track: #f4eeff;
+  --scroll-thumb: #c9b3e8;
+  --scroll-thumb-hover: #a855f7;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
+
+body {
+  background: radial-gradient(circle at 20% 0%, var(--bg3), var(--bg1) 45%, var(--bg2));
+  background-attachment: fixed;
+  color: var(--text);
+  transition: background .5s, color .3s;
+  min-height: 0vh; padding-bottom: 0px;
+  overflow-x: hidden;
+}
+
+[class*="drop" i],
+[class*="upload" i],
+[class*="drag" i],
+[class*="file-input" i],
+[class*="attach" i],
+[class*="image" i][class*="hint" i] {
+  display: none !important;
+}
+::file-selector-button { display: none !important; }
+
+/*ЗВЁЗДЫ*/
+#bgStars {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
+}
+.starLayer {
+  position: absolute;
+  left: -10px; top: -10px;
+  width: 5px; height: 5px;
+  background: transparent;
+  border-radius: 50%;
+  animation: starTwinkle 5s ease-in-out infinite;
+}
+.starLayer.far  { animation-duration: 7s; }
+.starLayer.mid  { animation-duration: 5s; }
+.starLayer.near { animation-duration: 3.5s; filter: drop-shadow(0 0 4px rgba(220,180,255,.8)); }
+
+body.light .starLayer.near {
+  filter: drop-shadow(0 0 4px rgba(110, 50, 180, .5));
+}
+
+@keyframes starTwinkle {
+  0%, 100% { opacity: .35; }
+  50%      { opacity: 1; }
+}
+
+#app {
+  position: relative; z-index: 1;
+  width: 92%;
+  max-width: 780px;
+  margin: 20px auto;
+  padding: 24px; /* Вернули паддинг */
+  border-radius: 24px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 8px 48px rgba(120, 60, 220, .22), inset 0 1px 0 rgba(255,255,255,.05);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: appear .6s cubic-bezier(.2,.8,.3,1);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  clip-path: inset(0 round 24px);
+}
+
+@keyframes appear {
+  from { opacity: 0; transform: translateY(30px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+h1 { font-size: 38px; margin: 0 0 6px; letter-spacing: -1px;
+  background: linear-gradient(135deg, #d8b4fe, #a855f7 60%, #7c3aed);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+#desc { opacity: .7; margin: 0 0 12px; font-size: 15px; }
+
+.selectBox { margin: 20px 0; }
+label { display: block; margin: 12px 0 6px; font-size: 14px; opacity: .8; }
+
+select, textarea {
+  width: 100%; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--field-border);
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 16px; outline: none;
+  font-family: inherit;
+  transition: border-color .18s, box-shadow .18s;
+}
+select::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+textarea { height: 120px; resize: vertical; min-height: 100px; }
+textarea#output { background: var(--field-bg); }
+textarea.dragover { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+#counter { text-align: right; opacity: .55; font-size: 13px; margin-top: 6px; }
+
+.buttons { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin: 20px 0; }
+.buttons.plus { margin: 10px 0; }
+
+button {
+  padding: 12px 20px; border-radius: 12px; border: none; cursor: pointer;
+  background: var(--btn-bg); color: var(--text); font-size: 15px; font-weight: 500;
+  transition: transform .18s, background .2s, box-shadow .2s;
+  font-family: inherit;
+}
+button:hover { background: var(--btn-hover); transform: translateY(-2px);
+  box-shadow: 0 6px 20px var(--accent-glow); }
+button:active { transform: translateY(0) scale(.97); }
+
+#status {
+  margin-top: 16px; padding: 12px 16px; border-radius: 12px;
+  background: rgba(255,255,255,.06); font-size: 14px;
+  transition: background .3s;
+  border-left: 3px solid transparent;
+}
+body.light #status { background: rgba(0,0,0,.05); }
+#status.ok { border-left-color: var(--ok); background: rgba(74,222,128,.1); }
+#status.warn { border-left-color: var(--warn); background: rgba(251,191,36,.1); }
+#status.err { border-left-color: var(--err); background: rgba(248,113,113,.1); }
+
+#hint {
+  margin-top: 10px; font-size: 12px; opacity: .45; text-align: center;
+  line-height: 1.6;
+}
+#info { text-align: center; opacity: .4; font-size: 12px; margin-top: 10px; }
+
+/*SETTINGS*/
+#settingsBtn {
+  position: fixed; right: 24px; bottom: 24px; width: 64px; height: 64px;
+  border-radius: 50%; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 30% 30%, #a855f7, #5b1f9e);
+  box-shadow: 0 0 28px var(--accent-glow); z-index: 100;
+  color: #fff;
+  transition: transform .5s cubic-bezier(.2,.8,.3,1), box-shadow .5s ease, background .3s, color .3s;
+}
+
+body.light #settingsBtn {
+  background: radial-gradient(circle at 30% 30%, #e2d4f5, #c9b3e8);
+  color: #4b2670;
+  box-shadow: 0 0 28px rgba(168,85,247,.3);
+}
+
+#settingsBtn svg {
+  display: block;
+  pointer-events: none;
+  transition: transform .5s cubic-bezier(.2,.8,.3,1);
+}
+
+#settingsBtn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 0 40px var(--accent-glow);
+}
+
+body.light #settingsBtn:hover {
+  box-shadow: 0 0 40px rgba(168,85,247,.5);
+}
+
+#settingsBtn:hover svg {
+  transform: rotate(90deg);
+}
+
+#settingsBtn:active {
+  transform: scale(1.02);
+}
+
+#settingsBtn:active svg {
+  transform: rotate(90deg);
+}
+
+#settingsPanel {
+  position: fixed; right: 24px; bottom: 100px; width: 290px; padding: 22px;
+  border-radius: 20px; background: var(--panel); border: 1px solid var(--panel-border);
+  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 12px 48px rgba(0,0,0,.5);
+  opacity: 0; transform: translateY(20px) scale(.95); pointer-events: none;
+  transition: .3s cubic-bezier(.2,.8,.3,1); z-index: 99;
+}
+#settingsPanel:not(.show) * {
+  pointer-events: none !important;
+}
+#settingsPanel.show {
+  opacity: 1; transform: translateY(0) scale(1);
+  pointer-events: auto; /* включаем клики для всей панели */
+}
+#settingsPanel h2 { margin: 0 0 12px; font-size: 18px; }
+
+/*ТУМБЛЕР*/
+.themeSwitch {
+  display: inline-block;
+  margin: 8px 0 20px;
+  pointer-events: none;
+  cursor: default;
+}
+.themeSwitch input { display: none; }
+.themeTrack {
+  pointer-events: auto;
+  cursor: pointer;
+  position: relative; display: block; width: 68px; height: 36px;
+  border-radius: 36px; background: linear-gradient(135deg, #1d0b33, #2a1247);
+  border: 1px solid var(--panel-border);
+  transition: background .4s, box-shadow .4s;
+  overflow: hidden;
+}
+.themeKnob {
+  position: absolute; top: 3px; left: 3px; width: 30px; height: 30px;
+  border-radius: 50%;
+  transition: transform .4s cubic-bezier(.2,.8,.3,1), background .4s;
+  background: radial-gradient(circle at 35% 35%, #f5e9ff, #c9b3e8 60%, #8a5fd6);
+  box-shadow: 0 0 14px rgba(200,150,255,.6);
+}
+/*ТЁМНАЯ — шарик слева, луна*/
+.themeSwitch input:checked + .themeTrack .themeKnob {
+  transform: translateX(0);
+  background: radial-gradient(circle at 38% 36%, #e8ddff 0%, #b9a3e6 40%, #6a4a9e 100%);
+  box-shadow: 0 0 16px rgba(200,150,255,.7), inset -6px -4px 0 rgba(60,30,110,.55);
+}
+.themeSwitch input:checked + .themeTrack {
+  background: linear-gradient(135deg, #1d0b33, #2a1247);
+}
+/*СВЕТЛАЯ — шарик справа, солнце*/
+.themeSwitch input:not(:checked) + .themeTrack .themeKnob {
+  transform: translateX(32px);
+  background: radial-gradient(circle at 50% 50%, #fff6cc 0%, #ffd23a 55%, #ff9d00 100%);
+  box-shadow:
+    0 0 0 2px rgba(255,180,0,.35),
+    0 0 16px rgba(255,200,0,.8),
+    0 0 30px rgba(255,160,0,.5);
+}
+.themeSwitch input:not(:checked) + .themeTrack {
+  background: linear-gradient(135deg, #ffe9a8, #ffc84d);
+}
+.themeSwitch input:not(:checked) + .themeTrack .themeKnob::after {
+  content: ""; position: absolute; inset: -6px; border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    rgba(255,200,0,.9) 0 8deg, transparent 8deg 30deg,
+    rgba(255,200,0,.9) 30deg 38deg, transparent 38deg 60deg,
+    rgba(255,200,0,.9) 60deg 68deg, transparent 68deg 90deg,
+    rgba(255,200,0,.9) 90deg 98deg, transparent 98deg 120deg,
+    rgba(255,200,0,.9) 120deg 128deg, transparent 128deg 150deg,
+    rgba(255,200,0,.9) 150deg 158deg, transparent 158deg 180deg,
+    rgba(255,200,0,.9) 180deg 188deg, transparent 188deg 210deg,
+    rgba(255,200,0,.9) 210deg 218deg, transparent 218deg 240deg,
+    rgba(255,200,0,.9) 240deg 248deg, transparent 248deg 270deg,
+    rgba(255,200,0,.9) 270deg 278deg, transparent 278deg 300deg,
+    rgba(255,200,0,.9) 300deg 308deg, transparent 308deg 330deg,
+    rgba(255,200,0,.9) 330deg 338deg, transparent 338deg 360deg);
+  -webkit-mask: radial-gradient(circle, transparent 60%, black 62%);
+  mask: radial-gradient(circle, transparent 60%, black 62%);
+  animation: sunRotate 12s linear infinite;
+}
+@keyframes sunRotate { to { transform: rotate(360deg); } }
+
+.checkLabel {
+  display: inline-flex;
+  align-items: center; gap: 8px; margin-top: 16px;
+  cursor: default;
+  pointer-events: none;
+}
+.checkLabel input,
+.checkLabel span {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.checkLabel input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+#historyBox {
+  margin-top: 20px; padding: 12px 16px; border-radius: 12px;
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  transition: border-color .18s, box-shadow .18s;
+}
+#historyBox:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+#historyToggle {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; user-select: none; font-weight: 500; padding: 4px 0;
+  color: var(--text);
+}
+#historyToggle:hover { opacity: .85; }
+#historyToggle .chevron {
+  width: 9px; height: 9px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg); transition: transform .3s cubic-bezier(.2,.8,.3,1);
+  margin-right: 4px;
+}
+#historyBox.open #historyToggle .chevron { transform: rotate(-135deg); }
+
+.historyInner {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows .38s cubic-bezier(.2,.8,.3,1);
+}
+#historyBox.open .historyInner { grid-template-rows: 1fr; }
+.historyBody { overflow: hidden; }
+
+.historyItem {
+  padding: 8px 10px; margin: 8px 0; border-radius: 8px; cursor: pointer;
+  background: rgba(255,255,255,.04); transition: .2s;
+}
+body.light .historyItem { background: rgba(0,0,0,.04); }
+.historyItem:hover { background: rgba(168,85,247,.15); }
+.historyMeta { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.badge {
+  background: var(--accent2); color: white; padding: 2px 8px; border-radius: 6px;
+  font-size: 11px; font-weight: 600;
+}
+.historyPreview { font-size: 13px; opacity: .75; margin-top: 4px; word-break: break-all; }
+.muted { opacity: .5; font-size: 13px; }
+#clearHistory { margin-top: 8px; padding: 6px 12px; font-size: 13px; }
+
+/* ============== КАСТОМНЫЙ СКРОЛЛБАР ============== */
+#app::-webkit-scrollbar {
+  width: 14px;
+  background: transparent;
+
+  /* ФИКС: Вытягиваем скроллбар за пределы карточки сверху и снизу */
+  margin-top: -30px;
+  margin-bottom: -30px;
+}
+
+#app::-webkit-scrollbar-track {
+  background: transparent;
+  /* Возвращаем трек на место, чтобы он не вылезал за пределы скроллбара */
+  margin: 30px 0;
+}
+
+#app::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 10px;
+  border: 3px solid var(--panel);
+  /* Толкаем ползунок вниз, чтобы он компенсировал вытягивание */
+  margin-top: 30px;
+}
+
+#app::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* Убиваем кнопки (на всякий случай, хоть они и уйдут за край) */
+#app::-webkit-scrollbar-button {
+  display: none !important;
+  height: 0 !important;
+  width: 0 !important;
+}
+
+#app::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Для Firefox */
+#app {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+`;
+document.head.appendChild(style);
+
+renderHistory();
+input.dispatchEvent(new Event("input"));
+
+})();
+</script>
+</body>
+</html>
